@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WeMake — Barista Station Prototype</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+</head>
+<body class="bg-[var(--background)] text-[var(--foreground)] antialiased m-0 p-4 sm:p-6">
+  <div class="max-w-3xl mx-auto space-y-5">
+
+    <!-- Header & Order Selector -->
+    <header class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <h1 class="text-xl font-bold tracking-tight">WeMake Coffee Shop — Barista Station</h1>
+        <p class="text-sm text-[var(--muted-foreground)] mt-0.5">
+          Practice making drinks step by step. Take your time—there is no timer.
+        </p>
+      </div>
+      <div class="flex flex-wrap gap-2" role="group" aria-label="Select practice order">
+        <button onclick="selectDrink('cappuccino')" id="btn-order-cappuccino"
+          class="px-4 py-2.5 rounded-lg border text-sm font-semibold transition-colors cursor-pointer">
+          Cappuccino
+        </button>
+        <button onclick="selectDrink('drip')" id="btn-order-drip"
+          class="px-4 py-2.5 rounded-lg border text-sm font-semibold transition-colors cursor-pointer">
+          Drip Coffee
+        </button>
+        <button onclick="selectDrink('americano')" id="btn-order-americano"
+          class="px-4 py-2.5 rounded-lg border text-sm font-semibold transition-colors cursor-pointer">
+          Americano
+        </button>
+      </div>
+    </header>
+
+    <!-- Order Ticket & Step Progress -->
+    <section class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[var(--border)]">
+        <div class="flex items-center gap-3">
+          <span class="px-3 py-1 rounded-md bg-[var(--secondary)] text-[var(--secondary-foreground)] text-xs font-bold uppercase tracking-wider">
+            Order Ticket
+          </span>
+          <span id="ticket-title" class="text-lg font-bold">Cappuccino — Small</span>
+        </div>
+        <span id="step-counter" class="text-sm font-medium text-[var(--muted-foreground)]">
+          Step 1 of 4
+        </span>
+      </div>
+
+      <!-- Step Progress Pills -->
+      <div id="step-pills" class="grid grid-cols-2 sm:grid-cols-4 gap-2"></div>
+
+      <!-- Clear Literal Instruction Banner -->
+      <div id="instruction-box" class="rounded-lg border border-[var(--border)] bg-[var(--content)] p-4">
+        <p class="text-xs font-bold uppercase tracking-wider text-[var(--muted-foreground)] mb-1">
+          Current Step
+        </p>
+        <p id="instruction-text" class="text-base font-semibold leading-snug"></p>
+      </div>
+
+      <!-- Calm Feedback Banner -->
+      <div id="feedback-box" class="hidden rounded-lg border p-3 text-sm font-medium"></div>
+    </section>
+
+    <!-- Interactive Work Area -->
+    <main id="work-area" class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 min-h-[260px]">
+      <!-- Rendered dynamically by JS -->
+    </main>
+
+  </div>
+
+  <script>
+    // =========================================================================
+    // EXTENSIBLE DRINK CONFIG
+    // Add, edit, or replace drink sizes, ingredients, and steps here.
+    // =========================================================================
+    const DRINKS = {
+      cappuccino: {
+        id: "cappuccino",
+        name: "Cappuccino",
+        size: "Small",
+        usesEspresso: true,
+        usesHotWater: false,
+        usesSteamMilk: true,
+        milkAmount: "Small pitcher (for 1 Small drink)",
+        steps: ["cup", "espresso", "milk", "cleanup"]
+      },
+      drip: {
+        id: "drip",
+        name: "Drip Coffee",
+        size: "Medium",
+        usesEspresso: false,
+        usesHotWater: false,
+        usesSteamMilk: false,
+        steps: ["cup", "drip", "cleanup"]
+      },
+      americano: {
+        id: "americano",
+        name: "Americano",
+        size: "Large",
+        usesEspresso: true,
+        usesHotWater: true,
+        usesSteamMilk: false,
+        steps: ["cup", "espresso", "water", "cleanup"]
+      }
+    };
+
+    const STEP_LABELS = {
+      cup: "1. Pick Cup",
+      drip: "2. Brew Drip",
+      espresso: "2. Espresso",
+      milk: "3. Steam Milk",
+      water: "3. Hot Water",
+      cleanup: "Clean Up"
+    };
+
+    const CUP_SIZES = [
+      { id: "Small", label: "Small", detail: "Standard Cappuccino size" },
+      { id: "Medium", label: "Medium", detail: "Standard Drip Coffee size" },
+      { id: "Large", label: "Large", detail: "Standard Americano size" }
+    ];
+
+    // =========================================================================
+    // STATE
+    // =========================================================================
+    let state = {
+      drinkId: "cappuccino",
+      stepIndex: 0,
+      completed: false,
+      // Sub-step states
+      grindSetting: "Medium",
+      beansGround: false,
+      shotPulled: false,
+      dripBrewed: false,
+      waterAdded: false,
+      // Milk steaming state
+      milkMeasured: false,
+      pitcherHeight: 50, // 0 (bottom) to 100 (top). Target zone: 65 - 85 (tip just below surface)
+      steamOn: false,
+      steamProgress: 0, // 0 to 100
+      steamInterval: null,
+      // Cleanup state
+      mugBussed: false,
+      counterSpots: [false, false, false]
+    };
+
+    function getDrink() {
+      return DRINKS[state.drinkId];
+    }
+
+    function getCurrentStep() {
+      const drink = getDrink();
+      return drink.steps[state.stepIndex];
+    }
+
+    function selectDrink(drinkId) {
+      stopSteamTimer();
+      state = {
+        drinkId,
+        stepIndex: 0,
+        completed: false,
+        grindSetting: "Medium",
+        beansGround: false,
+        shotPulled: false,
+        dripBrewed: false,
+        waterAdded: false,
+        milkMeasured: false,
+        pitcherHeight: 50,
+        steamOn: false,
+        steamProgress: 0,
+        steamInterval: null,
+        mugBussed: false,
+        counterSpots: [false, false, false]
+      };
+      hideFeedback();
+      render();
+    }
+
+    function showFeedback(message, type = "info") {
+      const box = document.getElementById("feedback-box");
+      box.classList.remove("hidden");
+      box.textContent = message;
+      // Use semantic borders/text without harsh flashing
+      if (type === "success") {
+        box.style.borderColor = "var(--success)";
+        box.style.color = "var(--success)";
+      } else if (type === "warning") {
+        box.style.borderColor = "var(--warning)";
+        box.style.color = "var(--foreground)";
+      } else {
+        box.style.borderColor = "var(--border)";
+        box.style.color = "var(--foreground)";
+      }
+    }
+
+    function hideFeedback() {
+      const box = document.getElementById("feedback-box");
+      box.classList.add("hidden");
+      box.textContent = "";
+    }
+
+    function advanceStep() {
+      stopSteamTimer();
+      const drink = getDrink();
+      if (state.stepIndex + 1 < drink.steps.length) {
+        state.stepIndex += 1;
+        hideFeedback();
+      } else {
+        state.completed = true;
+        showFeedback(`Order complete! The ${drink.size} ${drink.name} is ready and the counter is clean.`, "success");
+      }
+      render();
+    }
+
+    // =========================================================================
+    // ACTIONS
+    // =========================================================================
+    function pickCup(sizeId) {
+      const drink = getDrink();
+      if (sizeId === drink.size) {
+        showFeedback(`Correct. A ${drink.name} uses a ${drink.size} cup.`, "success");
+        setTimeout(advanceStep, 600);
+      } else {
+        showFeedback(`A ${drink.name} uses a ${drink.size} cup. Please select ${drink.size}.`, "warning");
+      }
+    }
+
+    function setGrind(setting) {
+      state.grindSetting = setting;
+      hideFeedback();
+      render();
+    }
+
+    function grindBeans() {
+      if (state.grindSetting !== "Fine") {
+        showFeedback("Espresso needs a Fine grind. Please select Fine first.", "warning");
+        return;
+      }
+      state.beansGround = true;
+      showFeedback("Beans ground on Fine setting.", "success");
+      render();
+    }
+
+    function pullEspressoShot() {
+      if (!state.beansGround) {
+        showFeedback("Please grind the espresso beans first.", "warning");
+        return;
+      }
+      state.shotPulled = true;
+      showFeedback("Espresso shot pulled.", "success");
+      setTimeout(advanceStep, 600);
+    }
+
+    function brewDripCoffee() {
+      state.dripBrewed = true;
+      showFeedback("Medium Drip Coffee brewed into the cup.", "success");
+      setTimeout(advanceStep, 600);
+    }
+
+    function addHotWater() {
+      state.waterAdded = true;
+      showFeedback("Hot water added to complete the Americano.", "success");
+      setTimeout(advanceStep, 600);
+    }
+
+    function measureMilk() {
+      state.milkMeasured = true;
+      showFeedback("Milk measured into the steaming pitcher.", "success");
+      render();
+    }
+
+    function updatePitcherHeight(val) {
+      state.pitcherHeight = Number(val);
+      renderMilkReadout();
+    }
+
+    function toggleSteam() {
+      if (!state.milkMeasured) {
+        showFeedback("Please measure the milk first.", "warning");
+        return;
+      }
+      if (state.steamOn) {
+        stopSteamTimer();
+        if (state.steamProgress >= 85) {
+          showFeedback("Good job. Milk is stretched and warm.", "success");
+          setTimeout(advanceStep, 600);
+        } else {
+          showFeedback("Steam turned off. Turn steam back on until the bar reaches Ready.", "info");
+        }
+        render();
+      } else {
+        state.steamOn = true;
+        hideFeedback();
+        state.steamInterval = setInterval(() => {
+          // Only stretch milk smoothly when pitcher height is in the target zone (65-85)
+          const inZone = state.pitcherHeight >= 65 && state.pitcherHeight <= 85;
+          const rate = inZone ? 5 : 2;
+          state.steamProgress = Math.min(100, state.steamProgress + rate);
+          renderMilkReadout();
+          if (state.steamProgress >= 100) {
+            stopSteamTimer();
+            showFeedback("Milk is ready! Click 'Turn Steam Off' to finish.", "success");
+            render();
+          }
+        }, 250);
+        render();
+      }
+    }
+
+    function stopSteamTimer() {
+      if (state.steamInterval) {
+        clearInterval(state.steamInterval);
+        state.steamInterval = null;
+      }
+      state.steamOn = false;
+    }
+
+    function busMug() {
+      state.mugBussed = true;
+      checkCleanupDone();
+      render();
+    }
+
+    function wipeSpot(idx) {
+      state.counterSpots[idx] = true;
+      checkCleanupDone();
+      render();
+    }
+
+    function checkCleanupDone() {
+      if (state.mugBussed && state.counterSpots.every(Boolean)) {
+        showFeedback("Station is clean and ready for the next order.", "success");
+        setTimeout(advanceStep, 600);
+      }
+    }
+
+    // =========================================================================
+    // RENDERING
+    // =========================================================================
+    function render() {
+      const drink = getDrink();
+
+      // Update order selector buttons
+      Object.keys(DRINKS).forEach((id) => {
+        const btn = document.getElementById(`btn-order-${id}`);
+        const active = id === state.drinkId;
+        btn.style.backgroundColor = active ? "var(--primary)" : "var(--content)";
+        btn.style.color = active ? "var(--primary-foreground)" : "var(--foreground)";
+        btn.style.borderColor = active ? "var(--primary)" : "var(--border)";
+      });
+
+      // Update ticket header
+      document.getElementById("ticket-title").textContent = `${drink.name} — ${drink.size}`;
+      document.getElementById("step-counter").textContent = state.completed
+        ? "Completed"
+        : `Step ${state.stepIndex + 1} of ${drink.steps.length}`;
+
+      // Update step pills
+      const pillsEl = document.getElementById("step-pills");
+      pillsEl.innerHTML = drink.steps.map((stepId, idx) => {
+        const isDone = state.completed || idx < state.stepIndex;
+        const isCurrent = !state.completed && idx === state.stepIndex;
+        let label = STEP_LABELS[stepId];
+        if (stepId === "cleanup") label = `${drink.steps.length}. Clean Up`;
+        return `
+          <div class="px-3 py-2 rounded-lg border text-xs font-semibold text-center"
+            style="
+              background-color: ${isCurrent ? "var(--primary)" : isDone ? "var(--secondary)" : "var(--content)"};
+              color: ${isCurrent ? "var(--primary-foreground)" : isDone ? "var(--secondary-foreground)" : "var(--muted-foreground)"};
+              border-color: ${isCurrent ? "var(--primary)" : "var(--border)"};
+            ">
+            ${isDone ? "✓ " : ""}${label}
+          </div>
+        `;
+      }).join("");
+
+      // Update instruction text & main work area
+      const instructionEl = document.getElementById("instruction-text");
+      const workEl = document.getElementById("work-area");
+
+      if (state.completed) {
+        instructionEl.textContent = `You finished making the ${drink.size} ${drink.name} and cleaned the station.`;
+        workEl.innerHTML = `
+          <div class="text-center py-8 space-y-4">
+            <div class="text-lg font-bold">Drink Ready to Serve</div>
+            <p class="text-sm text-[var(--muted-foreground)] max-w-md mx-auto">
+              You selected the ${drink.size} cup, prepared the ${drink.name}, and cleaned up the station.
+            </p>
+            <button onclick="selectDrink('${drink.id}')"
+              class="px-6 py-3 rounded-lg font-semibold text-sm cursor-pointer"
+              style="background-color: var(--primary); color: var(--primary-foreground);">
+              Practice ${drink.name} Again
+            </button>
+          </div>
+        `;
+        return;
+      }
+
+      const step = getCurrentStep();
+
+      if (step === "cup") {
+        instructionEl.textContent = `Select the ${drink.size} cup for this ${drink.name}.`;
+        workEl.innerHTML = `
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            ${CUP_SIZES.map((cup) => `
+              <button onclick="pickCup('${cup.id}')"
+                class="p-5 rounded-xl border border-[var(--border)] bg-[var(--content)] hover:border-[var(--primary)] text-left space-y-1.5 transition-colors cursor-pointer min-h-[110px]">
+                <div class="text-base font-bold">${cup.label} Cup</div>
+                <div class="text-xs text-[var(--muted-foreground)]">${cup.detail}</div>
+              </button>
+            `).join("")}
+          </div>
+        `;
+      } else if (step === "drip") {
+        instructionEl.textContent = "Place the Medium cup under the drip brewer and press Brew Drip Coffee.";
+        workEl.innerHTML = `
+          <div class="flex flex-col items-center justify-center py-6 space-y-5">
+            <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--content)] text-center w-full max-w-sm">
+              <div class="text-sm font-semibold">Drip Coffee Brewer</div>
+              <div class="text-xs text-[var(--muted-foreground)] mt-1">Medium Cup in position</div>
+            </div>
+            <button onclick="brewDripCoffee()"
+              class="px-6 py-3.5 rounded-lg font-semibold text-base cursor-pointer min-w-[220px]"
+              style="background-color: var(--primary); color: var(--primary-foreground);">
+              Brew Drip Coffee
+            </button>
+          </div>
+        `;
+      } else if (step === "espresso") {
+        instructionEl.textContent = !state.beansGround
+          ? "Step A: Set the grinder to Fine, then press Grind Beans."
+          : "Step B: Press Pull Espresso Shot.";
+        workEl.innerHTML = `
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--content)] space-y-3">
+              <div class="text-sm font-bold">1. Coffee Grinder</div>
+              <div class="text-xs text-[var(--muted-foreground)]">Choose grind size:</div>
+              <div class="flex gap-2">
+                ${["Coarse", "Medium", "Fine"].map((g) => `
+                  <button onclick="setGrind('${g}')"
+                    class="flex-1 py-2.5 px-3 rounded-lg border text-xs font-semibold cursor-pointer"
+                    style="
+                      background-color: ${state.grindSetting === g ? "var(--primary)" : "var(--card)"};
+                      color: ${state.grindSetting === g ? "var(--primary-foreground)" : "var(--foreground)"};
+                      border-color: ${state.grindSetting === g ? "var(--primary)" : "var(--border)"};
+                    ">
+                    ${g}
+                  </button>
+                `).join("")}
+              </div>
+              <button onclick="grindBeans()"
+                class="w-full py-3 rounded-lg border font-semibold text-sm cursor-pointer"
+                style="
+                  background-color: ${state.beansGround ? "var(--secondary)" : "var(--primary)"};
+                  color: ${state.beansGround ? "var(--secondary-foreground)" : "var(--primary-foreground)"};
+                  border-color: var(--border);
+                ">
+                ${state.beansGround ? "✓ Beans Ground (Fine)" : "Grind Beans"}
+              </button>
+            </div>
+
+            <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--content)] flex flex-col justify-between space-y-3">
+              <div>
+                <div class="text-sm font-bold">2. Espresso Machine</div>
+                <div class="text-xs text-[var(--muted-foreground)] mt-1">
+                  ${state.beansGround ? "Portafilter ready. Pull the shot into the cup." : "Grind beans first before pulling the shot."}
+                </div>
+              </div>
+              <button onclick="pullEspressoShot()"
+                class="w-full py-3 rounded-lg font-semibold text-sm cursor-pointer"
+                style="
+                  background-color: ${state.beansGround ? "var(--primary)" : "var(--secondary)"};
+                  color: ${state.beansGround ? "var(--primary-foreground)" : "var(--muted-foreground)"};
+                ">
+                Pull Espresso Shot
+              </button>
+            </div>
+          </div>
+        `;
+      } else if (step === "water") {
+        instructionEl.textContent = "Add hot water to the espresso to make a Large Americano.";
+        workEl.innerHTML = `
+          <div class="flex flex-col items-center justify-center py-6 space-y-5">
+            <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--content)] text-center w-full max-w-sm">
+              <div class="text-sm font-semibold">Hot Water Dispenser</div>
+              <div class="text-xs text-[var(--muted-foreground)] mt-1">Large cup with espresso shot ready</div>
+            </div>
+            <button onclick="addHotWater()"
+              class="px-6 py-3.5 rounded-lg font-semibold text-base cursor-pointer min-w-[220px]"
+              style="background-color: var(--primary); color: var(--primary-foreground);">
+              Add Hot Water
+            </button>
+          </div>
+        `;
+      } else if (step === "milk") {
+        instructionEl.textContent = !state.milkMeasured
+          ? `Measure milk (${drink.milkAmount}), then move the pitcher tip just below the surface to steam.`
+          : "Adjust Pitcher Height into the Target Zone, turn Steam On, and turn Steam Off when Ready.";
+        workEl.innerHTML = `
+          <div class="space-y-5">
+            <div class="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg border border-[var(--border)] bg-[var(--content)]">
+              <div>
+                <div class="text-sm font-bold">1. Measure Milk</div>
+                <div class="text-xs text-[var(--muted-foreground)]">${drink.milkAmount}</div>
+              </div>
+              <button onclick="measureMilk()"
+                class="px-4 py-2.5 rounded-lg font-semibold text-sm cursor-pointer"
+                style="
+                  background-color: ${state.milkMeasured ? "var(--secondary)" : "var(--primary)"};
+                  color: ${state.milkMeasured ? "var(--secondary-foreground)" : "var(--primary-foreground)"};
+                ">
+                ${state.milkMeasured ? "✓ Milk Measured" : "Measure Milk"}
+              </button>
+            </div>
+
+            <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--content)] space-y-4">
+              <div class="flex items-center justify-between">
+                <div class="text-sm font-bold">2. Steam & Stretch Milk</div>
+                <span id="zone-badge" class="text-xs font-semibold px-2.5 py-1 rounded border border-[var(--border)]"></span>
+              </div>
+
+              <div class="space-y-2">
+                <div class="flex justify-between text-xs text-[var(--muted-foreground)]">
+                  <span>Pitcher Lower (Deep)</span>
+                  <span>Target Zone: Tip Just Below Surface</span>
+                  <span>Pitcher Higher</span>
+                </div>
+                <input type="range" min="10" max="100" value="${state.pitcherHeight}"
+                  oninput="updatePitcherHeight(this.value)"
+                  class="w-full accent-[var(--primary)] cursor-pointer h-3" />
+              </div>
+
+              <div class="space-y-1.5">
+                <div class="flex justify-between text-xs font-medium">
+                  <span>Milk Stretch Progress</span>
+                  <span id="steam-pct">${state.steamProgress}%</span>
+                </div>
+                <div class="w-full h-4 rounded-full bg-[var(--card)] border border-[var(--border)] overflow-hidden">
+                  <div id="steam-bar" class="h-full transition-all duration-200"
+                    style="width: ${state.steamProgress}%; background-color: var(--primary);"></div>
+                </div>
+              </div>
+
+              <button onclick="toggleSteam()"
+                class="w-full py-3 rounded-lg font-semibold text-sm cursor-pointer"
+                style="
+                  background-color: ${state.steamOn ? "var(--warning)" : "var(--primary)"};
+                  color: var(--primary-foreground);
+                ">
+                ${state.steamOn ? "Turn Steam Off" : "Turn Steam On"}
+              </button>
+            </div>
+          </div>
+        `;
+        renderMilkReadout();
+      } else if (step === "cleanup") {
+        instructionEl.textContent = "Put the dirty pitcher/mug in the Bussing Tray and wipe all 3 spots on the counter.";
+        workEl.innerHTML = `
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--content)] flex flex-col justify-between space-y-3">
+              <div>
+                <div class="text-sm font-bold">1. Bussing Tray</div>
+                <div class="text-xs text-[var(--muted-foreground)] mt-1">
+                  Move used pitcher or mug to the bussing tray.
+                </div>
+              </div>
+              <button onclick="busMug()"
+                class="w-full py-3 rounded-lg font-semibold text-sm cursor-pointer"
+                style="
+                  background-color: ${state.mugBussed ? "var(--secondary)" : "var(--primary)"};
+                  color: ${state.mugBussed ? "var(--secondary-foreground)" : "var(--primary-foreground)"};
+                ">
+                ${state.mugBussed ? "✓ Placed in Bussing Tray" : "Put Used Item in Bussing Tray"}
+              </button>
+            </div>
+
+            <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--content)] space-y-3">
+              <div>
+                <div class="text-sm font-bold">2. Wipe Counter with Rag</div>
+                <div class="text-xs text-[var(--muted-foreground)] mt-1">
+                  Tap each spill spot to wipe it clean.
+                </div>
+              </div>
+              <div class="grid grid-cols-3 gap-2">
+                ${state.counterSpots.map((clean, idx) => `
+                  <button onclick="wipeSpot(${idx})"
+                    class="py-4 rounded-lg border text-xs font-semibold cursor-pointer transition-colors"
+                    style="
+                      background-color: ${clean ? "var(--secondary)" : "var(--card)"};
+                      color: ${clean ? "var(--secondary-foreground)" : "var(--foreground)"};
+                      border-color: ${clean ? "var(--success)" : "var(--border)"};
+                    ">
+                    ${clean ? "✓ Clean" : "Wipe Spot"}
+                  </button>
+                `).join("")}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    function renderMilkReadout() {
+      const badge = document.getElementById("zone-badge");
+      const bar = document.getElementById("steam-bar");
+      const pct = document.getElementById("steam-pct");
+      if (!badge || !bar || !pct) return;
+
+      const inZone = state.pitcherHeight >= 65 && state.pitcherHeight <= 85;
+      badge.textContent = inZone ? "In Target Zone" : state.pitcherHeight < 65 ? "Raise Pitcher" : "Lower Pitcher";
+      badge.style.color = inZone ? "var(--success)" : "var(--foreground)";
+      badge.style.borderColor = inZone ? "var(--success)" : "var(--border)";
+
+      bar.style.width = `${state.steamProgress}%`;
+      bar.style.backgroundColor = state.steamProgress >= 85 ? "var(--success)" : "var(--primary)";
+      pct.textContent = state.steamProgress >= 85 ? `${state.steamProgress}% (Ready)` : `${state.steamProgress}%`;
+    }
+
+    // Initial render
+    render();
+  </script>
+</body>
+</html>
